@@ -21,3 +21,5 @@ class GeneratorParams:
     median_size: int
     auto_smooth: bool
     extra_smooth: bool
+    shore_type: str = "standard"
+    shore_width: float = 0.5

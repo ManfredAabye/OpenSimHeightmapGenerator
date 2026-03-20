@@ -153,31 +153,139 @@ class TerrainEngine:
 
         return data
 
-    def _apply_edge_fade(self, height_data: np.ndarray, amplitude: float) -> np.ndarray:
-        """Fade map edges to NORMALNULL with a border proportional to amplitude.
+    def _apply_shore_effects(
+        self,
+        height_data: np.ndarray,
+        amplitude: float,
+        seed: int,
+        shore_type: str = "standard",
+        shore_width: float = 0.5,
+    ) -> np.ndarray:
+        """Apply configurable shoreline effects on the actual land-water boundary.
 
-        The border width equals max(8 % of map size, amplitude * SLOPE_RATIO).
-        SLOPE_RATIO = 2.0 px/m  (approx. 27-degree natural slope).
-        This guarantees that any feature in the interior has its complete base
-        visible and is never cut off at the tile edge.
-        Smoothstep is used for a natural-looking transition.
+        Unlike a simple map-edge fade, this works on the contour where terrain
+        meets sea level. That makes differences between shore modes clearly
+        visible even when terrain features are not touching the map border.
         """
         SLOPE_RATIO = 2.0
         rows, cols = height_data.shape
+
+        # Base border width derived from amplitude and minimum map fraction
         min_border = max(4, int(min(rows, cols) * 0.08))
         amp_border = int(amplitude * SLOPE_RATIO)
-        border = max(min_border, amp_border)
+        base_border = max(min_border, amp_border)
+        base_border = min(base_border, max(1, min(rows, cols) // 2))
+
+        # shore_width 0.5 → 1.0× (unchanged); 0.0 → 0.4×; 1.0 → 1.6×
+        shore_scale = 0.4 + float(np.clip(shore_width, 0.0, 1.0)) * 1.2
+        border = int(max(4, base_border * shore_scale))
         border = min(border, max(1, min(rows, cols) // 2))
 
-        y = np.arange(rows, dtype=np.float32)
-        x = np.arange(cols, dtype=np.float32)
-        y_dist = np.minimum(y, (rows - 1.0) - y)[:, None]
-        x_dist = np.minimum(x, (cols - 1.0) - x)[None, :]
-        edge_dist = np.minimum(y_dist, x_dist)
+        sea_level = 0.0
+        land_mask = height_data > sea_level
 
-        t = np.clip(edge_dist / float(border), 0.0, 1.0)
-        blend = t * t * (3.0 - 2.0 * t)   # smoothstep
-        return height_data * blend
+        # If there is no shoreline in the tile, apply mode-specific edge fallback
+        # so coastline presets remain visibly different.
+        if not np.any(land_mask) or np.all(land_mask):
+            y = np.arange(rows, dtype=np.float32)
+            x = np.arange(cols, dtype=np.float32)
+            y_dist = np.minimum(y, (rows - 1.0) - y)[:, None]
+            x_dist = np.minimum(x, (cols - 1.0) - x)[None, :]
+            edge_dist = np.minimum(y_dist, x_dist)
+
+            rng_edge = np.random.default_rng(int(seed) + 9917)
+
+            def _edge_noise(sigma: float, amp: float) -> np.ndarray:
+                raw = rng_edge.standard_normal((rows, cols)).astype(np.float32)
+                s = ndimage.gaussian_filter(raw, sigma=max(1.0, sigma))
+                s_std = float(np.std(s)) or 1.0
+                return (s / s_std) * amp
+
+            if shore_type == "strand":
+                d = np.clip(edge_dist + _edge_noise(border * 0.40, border * 0.35), 0.0, None)
+                t = np.clip(d / float(border), 0.0, 1.0)
+                blend = t ** 0.55
+            elif shore_type == "kliff":
+                d = np.clip(edge_dist + _edge_noise(border * 0.30, border * 0.45), 0.0, None)
+                t = np.clip(d / float(border), 0.0, 1.0)
+                blend = t ** 4.5
+            elif shore_type == "zerklueftet":
+                d = np.clip(
+                    edge_dist
+                    + _edge_noise(border * 0.70, border * 0.70)
+                    + _edge_noise(border * 0.16, border * 0.28),
+                    0.0,
+                    None,
+                )
+                t = np.clip(d / float(border), 0.0, 1.0)
+                blend = t * t * (3.0 - 2.0 * t)
+                blend = np.clip(blend + _edge_noise(border * 0.18, 0.08), 0.0, 1.0)
+            elif shore_type == "delta":
+                d = np.clip(
+                    edge_dist
+                    + _edge_noise(border * 0.95, border * 0.85)
+                    + _edge_noise(border * 0.20, border * 0.20),
+                    0.0,
+                    None,
+                )
+                t = np.clip(d / float(border), 0.0, 1.0)
+                blend = t * t * (3.0 - 2.0 * t)
+                channel = np.clip(_edge_noise(border * 0.60, 0.22), -0.35, 0.35)
+                blend = np.clip(blend - np.maximum(0.0, channel), 0.0, 1.0)
+            else:
+                t = np.clip(edge_dist / float(border), 0.0, 1.0)
+                blend = t * t * (3.0 - 2.0 * t)
+
+            return np.clip(height_data * blend, self.MIN_HEIGHT, self.MAX_HEIGHT)
+
+        # Distance to shoreline inside land and inside water.
+        dist_land = np.asarray(ndimage.distance_transform_edt(land_mask), dtype=np.float32)
+        dist_water = np.asarray(ndimage.distance_transform_edt(~land_mask), dtype=np.float32)
+        signed_dist = dist_land - dist_water
+
+        rng = np.random.default_rng(int(seed) + 7391)
+
+        def _smooth_noise(sigma: float, amp: float) -> np.ndarray:
+            raw = rng.standard_normal((rows, cols)).astype(np.float32)
+            s = ndimage.gaussian_filter(raw, sigma=max(1.0, sigma))
+            s_std = float(np.std(s)) or 1.0
+            return (s / s_std) * amp
+
+        # Use warped signed distance to perturb coastline shape.
+        if shore_type == "strand":
+            warp = _smooth_noise(border * 0.40, border * 0.35)
+        elif shore_type == "kliff":
+            warp = _smooth_noise(border * 0.30, border * 0.45)
+        elif shore_type == "zerklueftet":
+            warp = _smooth_noise(border * 0.70, border * 0.70) + _smooth_noise(border * 0.16, border * 0.28)
+        elif shore_type == "delta":
+            warp = _smooth_noise(border * 0.95, border * 0.85) + _smooth_noise(border * 0.20, border * 0.20)
+        else:
+            warp = np.zeros_like(signed_dist, dtype=np.float32)
+
+        d = signed_dist + warp
+        d_land = np.clip(d, 0.0, None)
+        t = np.clip(d_land / float(border), 0.0, 1.0)
+
+        if shore_type == "strand":
+            coast_factor = t ** 0.55
+        elif shore_type == "kliff":
+            coast_factor = t ** 4.5
+        elif shore_type == "zerklueftet":
+            coast_factor = t * t * (3.0 - 2.0 * t)
+            coast_factor = np.clip(coast_factor + _smooth_noise(border * 0.18, 0.08), 0.0, 1.0)
+        elif shore_type == "delta":
+            coast_factor = t * t * (3.0 - 2.0 * t)
+            channel = np.clip(_smooth_noise(border * 0.60, 0.22), -0.35, 0.35)
+            coast_factor = np.clip(coast_factor - np.maximum(0.0, channel), 0.0, 1.0)
+        else:
+            coast_factor = t * t * (3.0 - 2.0 * t)
+
+        out = height_data.copy()
+        # Only shape land near coastline; keep water as-is (0 m or below).
+        near_coast_land = (land_mask) & (d_land <= float(border))
+        out[near_coast_land] = height_data[near_coast_land] * coast_factor[near_coast_land]
+        return np.clip(out, self.MIN_HEIGHT, self.MAX_HEIGHT)
 
     def _enforce_natural_base(self, height_data: np.ndarray, amplitude: float) -> np.ndarray:
         """Ensure features have a footprint proportional to their height.
@@ -268,10 +376,22 @@ class TerrainEngine:
             crest = np.exp(-((yr / (radius_y * 0.28)) ** 2))
             profile = np.clip(ridge * (0.55 + 0.45 * crest), 0.0, 1.0).astype(np.float32)
         elif shape_name == "heart_island":
-            nx = xr / (radius_x * 1.55)
-            ny = yr / (radius_y * 1.55)
-            heart = (nx**2 + ny**2 - 1.0) ** 3 - nx**2 * ny**3
-            profile = np.clip(1.0 - np.maximum(heart, 0.0) * 4.5, 0.0, 1.0).astype(np.float32)
+            nx = xr / (radius_x * 1.35)
+            ny = yr / (radius_y * 1.35)
+            # Heart SDF: f <= 0 = Inneres der Herzform
+            f = (nx**2 + ny**2 - 1.0) ** 3 - nx**2 * ny**3
+            # Weiches Innen-Gewicht: steigt ab der Grenze schnell an
+            inside_w = np.clip(-f * 5.0, 0.0, 1.0) ** 0.45
+            # Kugelförmiges Höhenprofil (kein flaches Plateau) vom
+            # Massenschwerpunkt des Herzens aus (liegt leicht unterhalb Mitte)
+            dome_r = np.sqrt((nx * 0.82) ** 2 + ((ny - 0.12) * 0.82) ** 2)
+            dome = np.clip(1.05 - dome_r, 0.0, 1.0) ** 0.52
+            profile = (inside_w * dome).astype(np.float32)
+            # Harte kreisförmige Maske – eliminiert Artefakte der quadratischen
+            # Stempel-Bounding-Box und verhindert falsche "Land"-Pixel bei den
+            # Küsteneffekten
+            outer_r = np.sqrt((xr / (radius_x * 1.75)) ** 2 + (yr / (radius_y * 1.75)) ** 2)
+            profile = np.clip(profile * np.clip(1.5 - outer_r, 0.0, 1.0), 0.0, 1.0).astype(np.float32)
         elif shape_name == "footprint_island":
             heel = superellipse(xr + radius_x * 0.25, yr + radius_y * 0.20, radius_x * 0.65, radius_y * 0.90, 2.4)
             ball = superellipse(xr + radius_x * 0.18, yr - radius_y * 0.55, radius_x * 0.58, radius_y * 0.45, 2.4)
@@ -386,7 +506,13 @@ class TerrainEngine:
         amplitude = max(params.hill_height, params.mountain_height)
         height_data = self.apply_smoothing(height_data, params)
         height_data = self._enforce_natural_base(height_data, amplitude)
-        height_data = self._apply_edge_fade(height_data, amplitude)
+        height_data = self._apply_shore_effects(
+            height_data,
+            amplitude,
+            params.seed,
+            getattr(params, "shore_type", "standard"),
+            getattr(params, "shore_width", 0.5),
+        )
         gray_map = self.height_to_gray_array(height_data)
 
         if params.contrast != 1.0:

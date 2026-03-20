@@ -167,6 +167,36 @@ class HeightmapGeneratorGUI:
             bootstyle="secondary",
         ).pack(anchor=W, pady=(0, 8))
 
+        # ── Küstenrand ───────────────────────────────────────────────────────
+        self.shore_type_var = tk.StringVar(value="standard")
+        self.shore_width_var = tk.DoubleVar(value=0.5)
+
+        shore_box = tb.Labelframe(generator_frame, text="Küstenrand", padding=8)
+        shore_box.pack(fill=X, pady=(0, 8))
+
+        shore_type_row = tb.Frame(shore_box)
+        shore_type_row.pack(fill=X, pady=(0, 6))
+        tb.Label(shore_type_row, text="Küstenform:").pack(side=LEFT)
+        tb.Combobox(
+            shore_type_row,
+            textvariable=self.shore_type_var,
+            values=["Standard", "Strand", "Kliff", "Zerklüftet", "Delta"],
+            width=14,
+            state="readonly",
+            bootstyle="primary",
+        ).pack(side=LEFT, padx=(10, 0))
+
+        self._add_scale_row(shore_box, "Küstenbreite:", self.shore_width_var, 0.0, 1.0, "primary", "{:.2f}")
+
+        tb.Label(
+            shore_box,
+            text="Strand = sanfter Übergang • Kliff = steiler Abfall • Zerklüftet = Buchten & Kaps • Delta = Tendril-Mündungen",
+            font=("Helvetica", 8),
+            bootstyle="secondary",
+            wraplength=380,
+            justify=LEFT,
+        ).pack(anchor=W, pady=(2, 0))
+
         self.hill_extent_var = tk.DoubleVar(value=120.0)
         self.mountain_extent_var = tk.DoubleVar(value=180.0)
         self.octaves_var = tk.IntVar(value=3)
@@ -303,14 +333,16 @@ class HeightmapGeneratorGUI:
         tb.Button(preset_row, text="Sehr konservativ", bootstyle="danger-outline", width=15, command=lambda: self.apply_cost_preset("konservativ")).pack(side=LEFT, padx=4)
         tb.Label(cost_box, text="Hoeherer Kostenwert = schwieriger begehbar.", font=("Helvetica", 8), bootstyle="secondary").pack(anchor=W, pady=(2, 0))
 
-        self.figure = Figure(figsize=(5.2, 3.0), dpi=100)
+        self.figure = Figure(figsize=(2.6, 1.5), dpi=100)
         self.ax = self.figure.add_subplot(111)
         self.ax.set_xlabel("Entfernung (Meter)")
         self.ax.set_ylabel("Hoehe (Meter)")
         self.ax.set_title("Hoehenprofil")
         self.ax.grid(True, alpha=0.3)
         self.canvas = FigureCanvasTkAgg(self.figure, profile_frame)
-        self.canvas.get_tk_widget().pack(fill=BOTH, expand=YES)
+        canvas_widget = self.canvas.get_tk_widget()
+        canvas_widget.configure(height=230)
+        canvas_widget.pack(fill=X, expand=False)
 
         self.progress = tb.Progressbar(status_frame, mode="indeterminate", bootstyle="success-striped")
         self.progress.pack(fill=X, pady=(0, 8))
@@ -407,6 +439,8 @@ class HeightmapGeneratorGUI:
             self.mixer_enabled_var,
             self.mixer_strength_var,
             self.mixer_mode_var,
+            self.shore_type_var,
+            self.shore_width_var,
         ]
         for var in traces:
             var.trace_add("write", self._on_realtime_setting_changed)
@@ -457,7 +491,20 @@ class HeightmapGeneratorGUI:
             median_size=int(self.median_var.get()),
             auto_smooth=bool(self.auto_smooth_var.get()),
             extra_smooth=bool(self.extra_smooth_var.get()),
+            shore_type=self._shore_type_key(),
+            shore_width=float(self.shore_width_var.get()),
         )
+
+    def _shore_type_key(self) -> str:
+        """Maps the German combobox label to the internal shore_type key."""
+        mapping = {
+            "Standard": "standard",
+            "Strand": "strand",
+            "Kliff": "kliff",
+            "Zerklüftet": "zerklueftet",
+            "Delta": "delta",
+        }
+        return mapping.get(self.shore_type_var.get(), "standard")
 
     def _on_preview_layer_changed(self, *_args):
         self._refresh_preview_layer()
@@ -681,7 +728,22 @@ class HeightmapGeneratorGUI:
         self.ax.set_ylabel("Hoehe (Meter)")
         self.ax.set_title(f"Hoehenprofil | Min: {min_h:.1f}m | Max: {max_h:.1f}m | Mittel: {mean_h:.1f}m")
         self.ax.grid(True, alpha=0.3)
-        self.ax.set_ylim(self.engine.MIN_HEIGHT - 10, self.engine.MAX_HEIGHT + 10)
+
+        # Volle datenbasierte Y-Skalierung ohne Clipping.
+        p_min = float(np.min(profile))
+        p_max = float(np.max(profile))
+        span = p_max - p_min
+        if span < 0.1:
+            # Fast flaches Profil: kleinen symmetrischen Bereich zeigen.
+            mid = (p_min + p_max) * 0.5
+            y_min = mid - 0.5
+            y_max = mid + 0.5
+        else:
+            margin = max(0.2, span * 0.12)
+            y_min = p_min - margin
+            y_max = p_max + margin
+
+        self.ax.set_ylim(y_min, y_max)
         self.canvas.draw()
 
     def save_heightmap(self):
@@ -689,7 +751,7 @@ class HeightmapGeneratorGUI:
             return
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        default_name = f"homogen_{self.width_var.get()}x{self.height_var.get()}_{timestamp}"
+        default_name = f"OpenSim_{self.width_var.get()}x{self.height_var.get()}_{timestamp}"
 
         file_path = filedialog.asksaveasfilename(
             defaultextension=".png",
@@ -710,7 +772,7 @@ class HeightmapGeneratorGUI:
                 self.current_height_image.save(file_path)
                 meta_path = file_path.rsplit(".", 1)[0] + "_info.txt"
                 with open(meta_path, "w", encoding="utf-8") as file_handle:
-                    file_handle.write("Homogener Heightmap Generator\n")
+                    file_handle.write("OpenSim Heightmap Generator\n")
                     file_handle.write("============================\n")
                     file_handle.write(f"Terrain-Typ: {self.terrain_type_var.get()}\n")
                     file_handle.write(f"Groesse: {self.width_var.get()} x {self.height_var.get()} Meter\n")
