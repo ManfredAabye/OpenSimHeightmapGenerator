@@ -2,6 +2,7 @@ import noise
 import numpy as np
 from matplotlib.path import Path
 from scipy import ndimage
+from scipy import signal
 
 from .models import GeneratorParams
 
@@ -37,6 +38,29 @@ class TerrainEngine:
     def gray_to_height_array(self, gray_values):
         gray = np.clip(gray_values.astype(float), 0.0, 255.0)
         return np.interp(gray, self.gray_points, self.height_points_m)
+
+    def compute_analysis_layers(self, height_data: np.ndarray):
+        grad_y, grad_x = np.gradient(height_data)
+        slope_rad = np.arctan(np.sqrt(grad_x**2 + grad_y**2))
+        slope_deg = np.degrees(slope_rad).astype(np.float32)
+
+        smooth = ndimage.gaussian_filter(height_data, sigma=2.0)
+        rough_base = (height_data - smooth) ** 2
+        roughness = np.sqrt(ndimage.gaussian_filter(rough_base, sigma=2.0)).astype(np.float32)
+
+        return {
+            "slope": slope_deg,
+            "roughness": roughness,
+        }
+
+    @staticmethod
+    def layer_to_gray(layer_data: np.ndarray, min_percentile=2.0, max_percentile=98.0) -> np.ndarray:
+        low = float(np.percentile(layer_data, min_percentile))
+        high = float(np.percentile(layer_data, max_percentile))
+        if high <= low:
+            return np.zeros_like(layer_data, dtype=np.uint8)
+        norm = np.clip((layer_data - low) / (high - low), 0.0, 1.0)
+        return np.rint(norm * 255.0).astype(np.uint8)
 
     def generate_homogeneous_terrain(self, width, height, extent, octaves, persistence, seed):
         x = np.linspace(0, width / extent, width)
@@ -205,7 +229,68 @@ class TerrainEngine:
         xr = X * cos_r + Y * sin_r
         yr = -X * sin_r + Y * cos_r
 
-        if shape_name == "triangle":
+        def superellipse(xv, yv, rx, ry, pwr):
+            r = (np.abs(xv / rx) ** pwr + np.abs(yv / ry) ** pwr) ** (1.0 / pwr)
+            return np.clip(1.0 - r, 0.0, 1.0).astype(np.float32)
+
+        if shape_name == "continental_island":
+            core = superellipse(xr, yr, radius_x * 1.1, radius_y * 0.9, 2.4)
+            shelf = superellipse(xr, yr, radius_x * 1.6, radius_y * 1.25, 2.6) * 0.45
+            profile = np.maximum(core, shelf)
+        elif shape_name == "oceanic_island":
+            volcano = np.clip(1.0 - np.sqrt((xr / (radius_x * 0.95)) ** 2 + (yr / (radius_y * 0.95)) ** 2), 0.0, 1.0)
+            cone = volcano ** 2.3
+            flank = np.clip(1.0 - np.sqrt((xr / (radius_x * 1.6)) ** 2 + (yr / (radius_y * 1.6)) ** 2), 0.0, 1.0) * 0.35
+            profile = np.maximum(cone, flank).astype(np.float32)
+        elif shape_name == "atoll":
+            outer = np.clip(1.0 - np.sqrt((xr / (radius_x * 1.15)) ** 2 + (yr / (radius_y * 1.15)) ** 2), 0.0, 1.0)
+            inner = np.clip(1.0 - np.sqrt((xr / (radius_x * 0.58)) ** 2 + (yr / (radius_y * 0.58)) ** 2), 0.0, 1.0)
+            ring = np.clip(outer - inner * 1.6, 0.0, 1.0)
+            profile = (ring ** 1.1).astype(np.float32)
+        elif shape_name == "archipelago":
+            profile = np.zeros_like(xr, dtype=np.float32)
+            island_count = int(rng.integers(3, 8))
+            for _ in range(island_count):
+                ox = float(rng.uniform(-radius_x * 0.9, radius_x * 0.9))
+                oy = float(rng.uniform(-radius_y * 0.9, radius_y * 0.9))
+                rx = float(rng.uniform(radius_x * 0.25, radius_x * 0.45))
+                ry = float(rng.uniform(radius_y * 0.25, radius_y * 0.45))
+                pwr = float(rng.uniform(1.8, 3.0))
+                part = superellipse(xr - ox, yr - oy, rx, ry, pwr)
+                profile = np.maximum(profile, part)
+        elif shape_name == "river_island":
+            main = superellipse(xr, yr, radius_x * 1.8, radius_y * 0.55, 2.6)
+            taper_left = np.clip((xr + radius_x * 1.6) / (radius_x * 0.9), 0.0, 1.0)
+            taper_right = np.clip((radius_x * 1.6 - xr) / (radius_x * 0.9), 0.0, 1.0)
+            profile = (main * taper_left * taper_right).astype(np.float32)
+        elif shape_name == "dune_island":
+            ridge = superellipse(xr, yr, radius_x * 1.9, radius_y * 0.48, 2.2)
+            crest = np.exp(-((yr / (radius_y * 0.28)) ** 2))
+            profile = np.clip(ridge * (0.55 + 0.45 * crest), 0.0, 1.0).astype(np.float32)
+        elif shape_name == "heart_island":
+            nx = xr / (radius_x * 1.55)
+            ny = yr / (radius_y * 1.55)
+            heart = (nx**2 + ny**2 - 1.0) ** 3 - nx**2 * ny**3
+            profile = np.clip(1.0 - np.maximum(heart, 0.0) * 4.5, 0.0, 1.0).astype(np.float32)
+        elif shape_name == "footprint_island":
+            heel = superellipse(xr + radius_x * 0.25, yr + radius_y * 0.20, radius_x * 0.65, radius_y * 0.90, 2.4)
+            ball = superellipse(xr + radius_x * 0.18, yr - radius_y * 0.55, radius_x * 0.58, radius_y * 0.45, 2.4)
+            toes = np.zeros_like(xr, dtype=np.float32)
+            toe_offsets = [(-0.60, -0.95), (-0.30, -1.05), (0.00, -1.08), (0.30, -1.00), (0.55, -0.88)]
+            for ox, oy in toe_offsets:
+                toes = np.maximum(
+                    toes,
+                    superellipse(
+                        xr - ox * radius_x,
+                        yr - oy * radius_y,
+                        radius_x * 0.16,
+                        radius_y * 0.17,
+                        2.0,
+                    ),
+                )
+            profile = np.clip(np.maximum(np.maximum(heel, ball), toes), 0.0, 1.0).astype(np.float32)
+
+        elif shape_name == "triangle":
             nx = xr / radius_x
             ny = yr / radius_y
             points = np.column_stack((nx.ravel(), ny.ravel()))
@@ -213,8 +298,7 @@ class TerrainEngine:
             profile = triangle.contains_points(points).reshape(nx.shape).astype(np.float32)
         else:
             assert power is not None
-            r = (np.abs(xr / radius_x) ** power + np.abs(yr / radius_y) ** power) ** (1.0 / power)
-            profile = np.clip(1.0 - r, 0.0, 1.0).astype(np.float32)
+            profile = superellipse(xr, yr, radius_x, radius_y, power)
 
         round_sigma = max(1.0, max(radius_x, radius_y) * 0.08)
         profile = ndimage.gaussian_filter(profile, sigma=round_sigma)
@@ -225,6 +309,10 @@ class TerrainEngine:
 
     def _place_features(self, terrain: np.ndarray, count: int, height_value: float, extent: float, shape_name: str, rng: np.random.Generator):
         rows, cols = terrain.shape
+        count = max(0, int(count))
+        if count <= 0 or height_value <= 0.0:
+            return
+
         effective_extent = max(float(extent), float(height_value) * 4.0)
         stamp = self._create_shape_profile(shape_name, effective_extent, rng) * float(height_value)
         stamp_h, stamp_w = stamp.shape
@@ -233,26 +321,25 @@ class TerrainEngine:
         margin_y = min(max(half_h + 2, int(height_value * 2.0)), max(1, rows // 2))
         margin_x = min(max(half_w + 2, int(height_value * 2.0)), max(1, cols // 2))
 
-        for _ in range(max(0, int(count))):
-            if cols > margin_x * 2:
-                center_x = int(rng.integers(margin_x, cols - margin_x))
-            else:
-                center_x = cols // 2
-            if rows > margin_y * 2:
-                center_y = int(rng.integers(margin_y, rows - margin_y))
-            else:
-                center_y = rows // 2
+        if cols > margin_x * 2:
+            centers_x = rng.integers(margin_x, cols - margin_x, size=count)
+        else:
+            centers_x = np.full(count, cols // 2, dtype=np.int32)
+        if rows > margin_y * 2:
+            centers_y = rng.integers(margin_y, rows - margin_y, size=count)
+        else:
+            centers_y = np.full(count, rows // 2, dtype=np.int32)
 
-            x0 = max(0, center_x - half_w)
-            y0 = max(0, center_y - half_h)
-            x1 = min(cols, center_x + half_w + 1)
-            y1 = min(rows, center_y + half_h + 1)
+        impulses = np.zeros_like(terrain, dtype=np.float32)
+        np.add.at(impulses, (centers_y, centers_x), 1.0)
 
-            sx0 = x0 - (center_x - half_w)
-            sy0 = y0 - (center_y - half_h)
-            sx1 = sx0 + (x1 - x0)
-            sy1 = sy0 + (y1 - y0)
-            terrain[y0:y1, x0:x1] += stamp[sy0:sy1, sx0:sx1]
+        # C-optimierte Faltung statt Python-Schleife ueber jedes Feature.
+        # Bei grossen Stamps ist FFT deutlich schneller als direkte Faltung.
+        if stamp.size >= 64 * 64:
+            conv = signal.fftconvolve(impulses, stamp, mode="same")
+            terrain += conv.astype(np.float32, copy=False)
+        else:
+            terrain += ndimage.convolve(impulses, stamp, mode="constant", cval=0.0)
 
     def generate_feature_terrain(self, params: GeneratorParams):
         rng = np.random.default_rng(int(params.seed))
@@ -308,4 +395,5 @@ class TerrainEngine:
             gray_float = np.clip((gray_float - sea_level_gray) * params.contrast + sea_level_gray, 0, 255)
             gray_map = np.rint(gray_float).astype(np.uint8)
 
-        return height_data, gray_map
+        analysis_layers = self.compute_analysis_layers(height_data)
+        return height_data, gray_map, analysis_layers

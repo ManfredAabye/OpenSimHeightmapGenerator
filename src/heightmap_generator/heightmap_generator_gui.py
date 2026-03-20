@@ -33,10 +33,17 @@ class HeightmapGeneratorGUI:
         self.is_generating = False
         self._queued_live_refresh = False
         self._last_params = None
+        self._realtime_after_id = None
+        self._realtime_debounce_ms = 260
 
         self.current_image = None
+        self.current_height_image = None
+        self.height_gray_map = None
         self.preview_photo = None
         self.height_data = None
+        self.slope_data = None
+        self.roughness_data = None
+        self.cost_data = None
         self.mixer_height_data = None
         self.mixer_source_path = None
 
@@ -143,6 +150,14 @@ class HeightmapGeneratorGUI:
             ("Rechteckig", "rectangle"),
             ("Eliptisch", "ellipse"),
             ("Dreieckig", "triangle"),
+            ("Kontinentale Insel", "continental_island"),
+            ("Ozeanische Insel", "oceanic_island"),
+            ("Atoll", "atoll"),
+            ("Archipel", "archipelago"),
+            ("Flussinsel", "river_island"),
+            ("Dueneninsel", "dune_island"),
+            ("Herzinsel", "heart_island"),
+            ("Fussabdruck-Insel", "footprint_island"),
         ]:
             tb.Radiobutton(terrain_frame, text=text, variable=self.terrain_type_var, value=value, bootstyle="primary").pack(anchor=W, pady=2)
         tb.Label(
@@ -219,6 +234,9 @@ class HeightmapGeneratorGUI:
         self.mixer_enabled_var = tk.BooleanVar(value=False)
         self.mixer_strength_var = tk.DoubleVar(value=0.5)
         self.mixer_mode_var = tk.StringVar(value="mix")
+        self.cost_height_weight_var = tk.DoubleVar(value=0.15)
+        self.cost_slope_weight_var = tk.DoubleVar(value=0.55)
+        self.cost_rough_weight_var = tk.DoubleVar(value=0.30)
 
         self._add_scale_row(filter_frame, "Gauss-Filter:", self.gauss_var, 0.5, 5.0, "primary", "{:.1f}")
 
@@ -272,6 +290,19 @@ class HeightmapGeneratorGUI:
         self.mixer_source_label = tb.Label(source_frame, text="Keine Mixer-Heightmap geladen", font=("Helvetica", 8))
         self.mixer_source_label.pack(side=LEFT, padx=(10, 0))
 
+        cost_box = tb.Labelframe(filter_frame, text="Kostenkarte (Traversability)", padding=8)
+        cost_box.pack(fill=X, pady=(10, 0))
+        self._add_scale_row(cost_box, "Gewicht Hoehe:", self.cost_height_weight_var, 0.0, 1.0, "info", "{:.2f}")
+        self._add_scale_row(cost_box, "Gewicht Steigung:", self.cost_slope_weight_var, 0.0, 1.0, "info", "{:.2f}")
+        self._add_scale_row(cost_box, "Gewicht Rauheit:", self.cost_rough_weight_var, 0.0, 1.0, "info", "{:.2f}")
+        preset_row = tb.Frame(cost_box)
+        preset_row.pack(fill=X, pady=(6, 0))
+        tb.Label(preset_row, text="Presets:").pack(side=LEFT)
+        tb.Button(preset_row, text="Fahrbar", bootstyle="success-outline", width=11, command=lambda: self.apply_cost_preset("fahrbar")).pack(side=LEFT, padx=(8, 4))
+        tb.Button(preset_row, text="Vorsichtig", bootstyle="warning-outline", width=11, command=lambda: self.apply_cost_preset("vorsichtig")).pack(side=LEFT, padx=4)
+        tb.Button(preset_row, text="Sehr konservativ", bootstyle="danger-outline", width=15, command=lambda: self.apply_cost_preset("konservativ")).pack(side=LEFT, padx=4)
+        tb.Label(cost_box, text="Hoeherer Kostenwert = schwieriger begehbar.", font=("Helvetica", 8), bootstyle="secondary").pack(anchor=W, pady=(2, 0))
+
         self.figure = Figure(figsize=(5.2, 3.0), dpi=100)
         self.ax = self.figure.add_subplot(111)
         self.ax.set_xlabel("Entfernung (Meter)")
@@ -298,6 +329,9 @@ class HeightmapGeneratorGUI:
         self.preview_btn = tb.Button(button_frame, text="3D Vorschau", command=self.show_3d_preview, bootstyle="info", width=14, state=DISABLED)
         self.preview_btn.pack(fill=X)
 
+        self.export_layers_btn = tb.Button(button_frame, text="Layer Export", command=self.export_layers, bootstyle="secondary", state=DISABLED)
+        self.export_layers_btn.pack(fill=X, pady=(8, 0))
+
         preview_container = tb.Frame(terrain_preview_frame, bootstyle="secondary", padding=6)
         preview_container.pack(fill=BOTH, expand=YES)
         self.preview_label = tb.Label(preview_container, text="Mini-Vorschau erscheint nach Generierung", anchor="center", width=34, padding=10)
@@ -305,6 +339,24 @@ class HeightmapGeneratorGUI:
 
         self.pixel_info_label = tb.Label(preview_info_frame, text="Pixel-Info: Vorschau generieren und mit der Maus ueber das Bild fahren", font=("Helvetica", 9), justify=LEFT, wraplength=420)
         self.pixel_info_label.pack(fill=X)
+
+        layer_frame = tb.Frame(preview_info_frame)
+        layer_frame.pack(fill=X, pady=(8, 0))
+        tb.Label(layer_frame, text="Layer:").pack(side=LEFT)
+        self.preview_layer_var = tk.StringVar(value="Hoehe")
+        layer_combo = tb.Combobox(
+            layer_frame,
+            textvariable=self.preview_layer_var,
+            values=["Hoehe", "Steigung", "Rauheit", "Kosten"],
+            width=12,
+            state="readonly",
+            bootstyle="info",
+        )
+        layer_combo.pack(side=LEFT, padx=(8, 0))
+        self.preview_layer_var.trace_add("write", self._on_preview_layer_changed)
+        self.cost_height_weight_var.trace_add("write", self._on_cost_weights_changed)
+        self.cost_slope_weight_var.trace_add("write", self._on_cost_weights_changed)
+        self.cost_rough_weight_var.trace_add("write", self._on_cost_weights_changed)
 
         self.preview_label.bind("<Motion>", self._update_pixel_info)
         self.preview_label.bind("<Button-1>", self._update_pixel_info)
@@ -367,6 +419,22 @@ class HeightmapGeneratorGUI:
             self._queued_live_refresh = True
             return
 
+        self._schedule_realtime_refresh()
+
+    def _schedule_realtime_refresh(self):
+        if self._realtime_after_id is not None:
+            try:
+                self.root.after_cancel(self._realtime_after_id)
+            except Exception:
+                pass
+        self._realtime_after_id = self.root.after(self._realtime_debounce_ms, self._run_realtime_refresh)
+
+    def _run_realtime_refresh(self):
+        self._realtime_after_id = None
+        if not self.realtime_3d_var.get() or self.is_generating:
+            if self.is_generating:
+                self._queued_live_refresh = True
+            return
         self.generate_heightmap(live_request=True)
 
     def _build_params(self):
@@ -390,6 +458,75 @@ class HeightmapGeneratorGUI:
             auto_smooth=bool(self.auto_smooth_var.get()),
             extra_smooth=bool(self.extra_smooth_var.get()),
         )
+
+    def _on_preview_layer_changed(self, *_args):
+        self._refresh_preview_layer()
+
+    def _on_cost_weights_changed(self, *_args):
+        if self.height_data is None:
+            return
+        self._compute_cost_layer()
+        self._refresh_preview_layer()
+
+    def apply_cost_preset(self, preset_name: str):
+        if preset_name == "fahrbar":
+            weights = (0.10, 0.35, 0.55)
+        elif preset_name == "vorsichtig":
+            weights = (0.15, 0.55, 0.30)
+        else:
+            weights = (0.20, 0.70, 0.10)
+
+        self.cost_height_weight_var.set(weights[0])
+        self.cost_slope_weight_var.set(weights[1])
+        self.cost_rough_weight_var.set(weights[2])
+        self.status_label.config(text=f"Kosten-Preset aktiv: {preset_name}")
+
+    def _compute_cost_layer(self):
+        if self.height_data is None or self.slope_data is None or self.roughness_data is None:
+            self.cost_data = None
+            return
+
+        h_min = float(np.min(self.height_data))
+        h_max = float(np.max(self.height_data))
+        h_span = max(1e-6, h_max - h_min)
+        height_norm = np.clip((self.height_data - h_min) / h_span, 0.0, 1.0)
+
+        slope_norm = np.clip(self.slope_data / 45.0, 0.0, 1.0)
+        rough_ref = float(np.percentile(self.roughness_data, 95.0))
+        rough_norm = np.clip(self.roughness_data / max(1e-6, rough_ref), 0.0, 1.0)
+
+        w_h = float(max(0.0, self.cost_height_weight_var.get()))
+        w_s = float(max(0.0, self.cost_slope_weight_var.get()))
+        w_r = float(max(0.0, self.cost_rough_weight_var.get()))
+        w_sum = max(1e-6, w_h + w_s + w_r)
+
+        self.cost_data = (w_h * height_norm + w_s * slope_norm + w_r * rough_norm) / w_sum
+
+    def _refresh_preview_layer(self):
+        if self.height_data is None:
+            return
+
+        selected_layer = self.preview_layer_var.get() if hasattr(self, "preview_layer_var") else "Hoehe"
+        if selected_layer == "Steigung" and self.slope_data is not None:
+            layer_gray = self.engine.layer_to_gray(self.slope_data)
+        elif selected_layer == "Rauheit" and self.roughness_data is not None:
+            layer_gray = self.engine.layer_to_gray(self.roughness_data)
+        elif selected_layer == "Kosten" and self.cost_data is not None:
+            layer_gray = np.rint(np.clip(self.cost_data, 0.0, 1.0) * 255.0).astype(np.uint8)
+        else:
+            layer_gray = self.height_gray_map
+
+        if layer_gray is None:
+            return
+
+        self.current_image = Image.fromarray(layer_gray, mode="L")
+        preview_image = self.current_image.copy()
+        preview_image.thumbnail((440, 440))
+
+        from PIL import ImageTk
+
+        self.preview_photo = ImageTk.PhotoImage(preview_image)
+        self.preview_label.config(image=self.preview_photo, text="")
 
     def random_seed(self):
         self.seed_var.set(random.randint(1, 10000))
@@ -415,7 +552,7 @@ class HeightmapGeneratorGUI:
             self.status_label.config(text=f"Mixer geladen: {os.path.basename(file_path)}")
 
             if self.realtime_3d_var.get() and not self.is_generating:
-                self.generate_heightmap(live_request=True)
+                self._schedule_realtime_refresh()
         except Exception as err:
             messagebox.showerror("Mixer-Fehler", f"Konnte Mixer-Heightmap nicht laden:\n{err}")
 
@@ -474,24 +611,25 @@ class HeightmapGeneratorGUI:
 
     def _generate_thread(self, params: GeneratorParams):
         try:
-            height_data, gray_map = self.engine.generate(params)
+            height_data, gray_map, analysis_layers = self.engine.generate(params)
             height_data = self._apply_mixer(height_data)
             gray_map = self.engine.height_to_gray_array(height_data)
+            # Nur bei aktivem Mixer neu berechnen, sonst die bereits berechneten Layer nutzen.
+            if self.mixer_enabled_var.get() and self.mixer_height_data is not None:
+                analysis_layers = self.engine.compute_analysis_layers(height_data)
             self.height_data = height_data
-            self.current_image = Image.fromarray(gray_map, mode="L")
+            self.height_gray_map = gray_map
+            self.slope_data = analysis_layers.get("slope")
+            self.roughness_data = analysis_layers.get("roughness")
+            self._compute_cost_layer()
+            self.current_height_image = Image.fromarray(gray_map, mode="L")
 
-            preview_image = self.current_image.copy()
-            preview_image.thumbnail((440, 440))
-
-            self.root.after(0, self._update_gui_after_generation, preview_image, params)
+            self.root.after(0, self._update_gui_after_generation, params)
         except Exception as err:
             self.root.after(0, self._show_error, str(err))
 
-    def _update_gui_after_generation(self, preview_image, params: GeneratorParams):
-        from PIL import ImageTk
-
-        self.preview_photo = ImageTk.PhotoImage(preview_image)
-        self.preview_label.config(image=self.preview_photo, text="")
+    def _update_gui_after_generation(self, params: GeneratorParams):
+        self._refresh_preview_layer()
         self.pixel_info_label.config(text="Pixel-Info: Mit Maus ueber die Vorschau fahren")
 
         self.update_height_profile()
@@ -499,6 +637,7 @@ class HeightmapGeneratorGUI:
         self.generate_btn.config(state=NORMAL)
         self.save_btn.config(state=NORMAL)
         self.preview_btn.config(state=NORMAL)
+        self.export_layers_btn.config(state=NORMAL)
         self.progress.stop()
 
         if self.height_data is not None:
@@ -514,7 +653,7 @@ class HeightmapGeneratorGUI:
 
         if self._queued_live_refresh and self.realtime_3d_var.get():
             self._queued_live_refresh = False
-            self.generate_heightmap(live_request=True)
+            self._schedule_realtime_refresh()
 
     def _show_error(self, error_msg):
         self.generate_btn.config(state=NORMAL)
@@ -546,7 +685,7 @@ class HeightmapGeneratorGUI:
         self.canvas.draw()
 
     def save_heightmap(self):
-        if self.current_image is None or self.height_data is None:
+        if self.current_height_image is None or self.height_data is None:
             return
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -568,7 +707,7 @@ class HeightmapGeneratorGUI:
             elif file_path.endswith(".csv"):
                 np.savetxt(file_path, self.height_data, delimiter=",", fmt="%.2f")
             else:
-                self.current_image.save(file_path)
+                self.current_height_image.save(file_path)
                 meta_path = file_path.rsplit(".", 1)[0] + "_info.txt"
                 with open(meta_path, "w", encoding="utf-8") as file_handle:
                     file_handle.write("Homogener Heightmap Generator\n")
@@ -594,7 +733,7 @@ class HeightmapGeneratorGUI:
         self.preview3d.show_static(self.height_data, title)
 
     def _update_pixel_info(self, event):
-        if self.current_image is None or self.preview_photo is None:
+        if self.current_image is None or self.preview_photo is None or self.height_gray_map is None or self.height_data is None:
             return
 
         preview_w = int(self.preview_photo.width())
@@ -616,24 +755,68 @@ class HeightmapGeneratorGUI:
         src_x = min(img_w - 1, max(0, int(local_x * img_w / preview_w)))
         src_y = min(img_h - 1, max(0, int(local_y * img_h / preview_h)))
 
-        raw_pixel = self.current_image.getpixel((src_x, src_y))
-        if raw_pixel is None:
-            return
-        if isinstance(raw_pixel, tuple):
-            gray = int(raw_pixel[0])
-        else:
-            gray = int(raw_pixel)
-        height_m = float(np.interp(gray, self.engine.gray_points, self.engine.height_points_m))
+        gray = int(self.height_gray_map[src_y, src_x])
+        height_m = float(self.height_data[src_y, src_x])
+        slope_m = float(self.slope_data[src_y, src_x]) if self.slope_data is not None else 0.0
+        rough_m = float(self.roughness_data[src_y, src_x]) if self.roughness_data is not None else 0.0
+        cost_v = float(self.cost_data[src_y, src_x]) if self.cost_data is not None else 0.0
         hex_triplet = f"{gray:02X}{gray:02X}{gray:02X}"
 
         self.pixel_info_label.config(
-            text=f"Pixel-Info: HEX #{hex_triplet} | Graustufe {gray} | Hoehe {height_m:.2f} m | Position {src_x},{src_y}"
+            text=f"Pixel-Info: HEX #{hex_triplet} | Graustufe {gray} | Hoehe {height_m:.2f} m | Steigung {slope_m:.2f} deg | Rauheit {rough_m:.2f} m | Kosten {cost_v:.2f} | Position {src_x},{src_y}"
         )
 
     def _clear_pixel_info(self, _event):
         self.pixel_info_label.config(text="Pixel-Info: Maus ausserhalb der Vorschau")
 
+    def export_layers(self):
+        if self.height_data is None or self.slope_data is None or self.roughness_data is None:
+            return
+
+        self._compute_cost_layer()
+        if self.cost_data is None:
+            return
+
+        export_dir = filedialog.askdirectory(title="Export-Ordner fuer Layer auswaehlen")
+        if not export_dir:
+            return
+
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            prefix = f"layers_{self.width_var.get()}x{self.height_var.get()}_{timestamp}"
+
+            height_gray = self.height_gray_map
+            if height_gray is None:
+                height_gray = self.engine.height_to_gray_array(self.height_data)
+            slope_gray = self.engine.layer_to_gray(self.slope_data)
+            rough_gray = self.engine.layer_to_gray(self.roughness_data)
+            cost_gray = np.rint(np.clip(self.cost_data, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+            Image.fromarray(height_gray, mode="L").save(os.path.join(export_dir, f"{prefix}_height.png"))
+            Image.fromarray(slope_gray, mode="L").save(os.path.join(export_dir, f"{prefix}_slope.png"))
+            Image.fromarray(rough_gray, mode="L").save(os.path.join(export_dir, f"{prefix}_roughness.png"))
+            Image.fromarray(cost_gray, mode="L").save(os.path.join(export_dir, f"{prefix}_cost.png"))
+
+            np.savetxt(os.path.join(export_dir, f"{prefix}_height.csv"), self.height_data, delimiter=",", fmt="%.4f")
+            np.savetxt(os.path.join(export_dir, f"{prefix}_slope.csv"), self.slope_data, delimiter=",", fmt="%.4f")
+            np.savetxt(os.path.join(export_dir, f"{prefix}_roughness.csv"), self.roughness_data, delimiter=",", fmt="%.4f")
+            np.savetxt(os.path.join(export_dir, f"{prefix}_cost.csv"), self.cost_data, delimiter=",", fmt="%.4f")
+
+            self.height_data.astype(np.float32).tofile(os.path.join(export_dir, f"{prefix}_height.raw"))
+            self.slope_data.astype(np.float32).tofile(os.path.join(export_dir, f"{prefix}_slope.raw"))
+            self.roughness_data.astype(np.float32).tofile(os.path.join(export_dir, f"{prefix}_roughness.raw"))
+            self.cost_data.astype(np.float32).tofile(os.path.join(export_dir, f"{prefix}_cost.raw"))
+
+            self.status_label.config(text=f"Layer exportiert: {os.path.basename(export_dir)}")
+        except Exception as err:
+            messagebox.showerror("Export-Fehler", f"Layer konnten nicht exportiert werden:\n{err}")
+
     def _on_close(self):
+        if self._realtime_after_id is not None:
+            try:
+                self.root.after_cancel(self._realtime_after_id)
+            except Exception:
+                pass
         if self.preview3d is not None:
             self.preview3d.close()
         self.root.destroy()
