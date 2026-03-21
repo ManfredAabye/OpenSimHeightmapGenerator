@@ -34,6 +34,7 @@ class HeightmapGeneratorGUI:
         self._queued_live_refresh = False
         self._last_params = None
         self._realtime_after_id = None
+        self._settlement_after_id = None
         self._realtime_debounce_ms = 260
 
         self.current_image = None
@@ -44,6 +45,10 @@ class HeightmapGeneratorGUI:
         self.slope_data = None
         self.roughness_data = None
         self.cost_data = None
+        self.buildable_data = None
+        self.settlement_data = None
+        self.path_data = None
+        self.building_data = None
         self.mixer_height_data = None
         self.mixer_source_path = None
 
@@ -55,7 +60,8 @@ class HeightmapGeneratorGUI:
         main_frame.pack(fill=BOTH, expand=YES)
         main_frame.columnconfigure(0, weight=3, uniform="layout")
         main_frame.columnconfigure(1, weight=3, uniform="layout")
-        main_frame.columnconfigure(2, weight=4, uniform="layout")
+        main_frame.columnconfigure(2, weight=3, uniform="layout")
+        main_frame.columnconfigure(3, weight=4, uniform="layout")
         main_frame.rowconfigure(1, weight=1)
 
         header = tb.Label(
@@ -69,8 +75,12 @@ class HeightmapGeneratorGUI:
         generator_frame = tb.Labelframe(main_frame, text="Generator", padding="15")
         generator_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
 
+        detail_frame = tb.Frame(main_frame)
+        detail_frame.grid(row=1, column=1, sticky="nsew", padx=5)
+        detail_frame.columnconfigure(0, weight=1)
+
         middle_frame = tb.Frame(main_frame)
-        middle_frame.grid(row=1, column=1, sticky="nsew", padx=5)
+        middle_frame.grid(row=1, column=2, sticky="nsew", padx=5)
         middle_frame.columnconfigure(0, weight=1)
         middle_frame.rowconfigure(3, weight=1)
 
@@ -87,7 +97,7 @@ class HeightmapGeneratorGUI:
         profile_frame.grid(row=3, column=0, sticky="nsew", pady=(12, 0))
 
         preview_column = tb.Frame(main_frame)
-        preview_column.grid(row=1, column=2, sticky="nsew", padx=(10, 0))
+        preview_column.grid(row=1, column=3, sticky="nsew", padx=(10, 0))
         preview_column.columnconfigure(0, weight=1)
         preview_column.rowconfigure(1, weight=1)
         preview_column.rowconfigure(3, weight=2)
@@ -170,9 +180,16 @@ class HeightmapGeneratorGUI:
         # ── Küstenrand ───────────────────────────────────────────────────────
         self.shore_type_var = tk.StringVar(value="standard")
         self.shore_width_var = tk.DoubleVar(value=0.5)
+        self.shore_enabled_var = tk.BooleanVar(value=True)
+        self.hills_enabled_var = tk.BooleanVar(value=True)
+        self.mountains_enabled_var = tk.BooleanVar(value=True)
 
-        shore_box = tb.Labelframe(generator_frame, text="Küstenrand", padding=8)
+        shore_box = tb.Labelframe(detail_frame, text="Küstenrand", padding=8)
         shore_box.pack(fill=X, pady=(0, 8))
+
+        shore_enabled_row = tb.Frame(shore_box)
+        shore_enabled_row.pack(fill=X, pady=(0, 6))
+        tb.Checkbutton(shore_enabled_row, text="Küstenrand aktiv", variable=self.shore_enabled_var, bootstyle="primary-round-toggle").pack(side=LEFT)
 
         shore_type_row = tb.Frame(shore_box)
         shore_type_row.pack(fill=X, pady=(0, 6))
@@ -197,8 +214,9 @@ class HeightmapGeneratorGUI:
             justify=LEFT,
         ).pack(anchor=W, pady=(2, 0))
 
-        self.hill_extent_var = tk.DoubleVar(value=120.0)
-        self.mountain_extent_var = tk.DoubleVar(value=180.0)
+        self.hill_extent_var = tk.DoubleVar(value=47.0)
+        self.mountain_extent_var = tk.DoubleVar(value=70.0)
+        self.landmass_scale_var = tk.DoubleVar(value=50.0)
         self.octaves_var = tk.IntVar(value=3)
         self.persistence_var = tk.DoubleVar(value=0.3)
         self.base_height_var = tk.DoubleVar(value=0.0)
@@ -207,16 +225,25 @@ class HeightmapGeneratorGUI:
         self.mountain_count_var = tk.IntVar(value=2)
         self.mountain_height_var = tk.DoubleVar(value=30.0)
         self.gauss_var = tk.DoubleVar(value=2.0)
+        self.coastal_erosion_var = tk.DoubleVar(value=0.0)
+        self.ridge_strength_var = tk.DoubleVar(value=0.0)
+        self.drainage_strength_var = tk.DoubleVar(value=0.0)
 
-        tb.Label(generator_frame, text="Huegel:", font=("Helvetica", 11, "bold")).pack(anchor=W, pady=(10, 5))
+        hill_header_row = tb.Frame(generator_frame)
+        hill_header_row.pack(fill=X, pady=(10, 5))
+        tb.Label(hill_header_row, text="Huegel:", font=("Helvetica", 11, "bold")).pack(side=LEFT)
+        tb.Checkbutton(hill_header_row, text="aktiv", variable=self.hills_enabled_var, bootstyle="primary-round-toggle").pack(side=LEFT, padx=(12, 0))
         self._add_scale_row(generator_frame, "Anzahl:", self.hill_count_var, 0, 20, "primary", "{:.0f}")
         self._add_scale_row(generator_frame, "Hoehe (m):", self.hill_height_var, 0.5, 30, "primary", "{:.1f}")
-        self._add_scale_row(generator_frame, "Umfang:", self.hill_extent_var, 50, 300, "primary", "{:.1f}")
+        self._add_scale_row(generator_frame, "Umfang (%):", self.hill_extent_var, 5, 150, "primary", "{:.0f}")
 
-        tb.Label(generator_frame, text="Berge:", font=("Helvetica", 11, "bold")).pack(anchor=W, pady=(12, 5))
+        mountain_header_row = tb.Frame(generator_frame)
+        mountain_header_row.pack(fill=X, pady=(12, 5))
+        tb.Label(mountain_header_row, text="Berge:", font=("Helvetica", 11, "bold")).pack(side=LEFT)
+        tb.Checkbutton(mountain_header_row, text="aktiv", variable=self.mountains_enabled_var, bootstyle="warning-round-toggle").pack(side=LEFT, padx=(12, 0))
         self._add_scale_row(generator_frame, "Anzahl:", self.mountain_count_var, 0, 12, "warning", "{:.0f}")
         self._add_scale_row(generator_frame, "Hoehe (m):", self.mountain_height_var, 1, 60, "warning", "{:.1f}")
-        self._add_scale_row(generator_frame, "Umfang:", self.mountain_extent_var, 50, 300, "warning", "{:.1f}")
+        self._add_scale_row(generator_frame, "Umfang (%):", self.mountain_extent_var, 5, 150, "warning", "{:.0f}")
 
         tb.Label(generator_frame, text="Feindetails:", font=("Helvetica", 11, "bold")).pack(anchor=W, pady=(12, 5))
         self._add_scale_row(generator_frame, "Detailstufe:", self.octaves_var, 1, 5, "primary", "{:.0f}")
@@ -231,11 +258,32 @@ class HeightmapGeneratorGUI:
 
         self._add_scale_row(generator_frame, "Rauheit:", self.persistence_var, 0.1, 0.6, "primary", "{:.2f}")
         self._add_scale_row(generator_frame, "Glaetten:", self.gauss_var, 0.5, 5.0, "primary", "{:.1f}")
+        self._add_scale_row(generator_frame, "Landmasse (%):", self.landmass_scale_var, 10, 100, "primary", "{:.0f}%")
         tb.Label(
             generator_frame,
             text="Rauheit erzeugt Oberflaechenstruktur. Glaetten beruhigt diese wieder.",
             font=("Helvetica", 8),
             bootstyle="secondary",
+        ).pack(anchor=W, pady=(0, 6))
+
+        procedural_box = tb.Labelframe(detail_frame, text="Prozedural", padding=8)
+        procedural_box.pack(fill=X, pady=(0, 8))
+        self._add_scale_row(procedural_box, "Kuestenerosion:", self.coastal_erosion_var, 0.0, 1.0, "primary", "{:.2f}")
+        self._add_scale_row(procedural_box, "Berggrate:", self.ridge_strength_var, 0.0, 1.0, "primary", "{:.2f}")
+        self._add_scale_row(procedural_box, "Drainage:", self.drainage_strength_var, 0.0, 1.0, "primary", "{:.2f}")
+        procedural_preset_row = tb.Frame(procedural_box)
+        procedural_preset_row.pack(fill=X, pady=(4, 4))
+        tb.Label(procedural_preset_row, text="Presets:").pack(side=LEFT)
+        tb.Button(procedural_preset_row, text="Sanft", bootstyle="success-outline", width=10, command=lambda: self.apply_procedural_preset("sanft")).pack(side=LEFT, padx=(8, 4))
+        tb.Button(procedural_preset_row, text="Realistisch", bootstyle="warning-outline", width=10, command=lambda: self.apply_procedural_preset("realistisch")).pack(side=LEFT, padx=4)
+        tb.Button(procedural_preset_row, text="Wild", bootstyle="danger-outline", width=10, command=lambda: self.apply_procedural_preset("wild")).pack(side=LEFT, padx=4)
+        tb.Label(
+            procedural_box,
+            text="Kuestenerosion bricht Ufer auf, Berggrate schaerfen Ruecken, Drainage zieht leichte Rinnen ins Land.",
+            font=("Helvetica", 8),
+            bootstyle="secondary",
+            wraplength=840,
+            justify=LEFT,
         ).pack(anchor=W, pady=(0, 6))
 
         self._add_scale_row(generator_frame, "Offset ab NORMALNULL (m):", self.base_height_var, 0, 29, "primary", "{:.1f}")
@@ -267,6 +315,23 @@ class HeightmapGeneratorGUI:
         self.cost_height_weight_var = tk.DoubleVar(value=0.15)
         self.cost_slope_weight_var = tk.DoubleVar(value=0.55)
         self.cost_rough_weight_var = tk.DoubleVar(value=0.30)
+        self.buildable_slope_var = tk.DoubleVar(value=8.0)
+        self.buildable_roughness_var = tk.DoubleVar(value=0.35)
+        self.min_coast_distance_var = tk.DoubleVar(value=8.0)
+        self.settlement_border_margin_var = tk.DoubleVar(value=8.0)
+        self.settlement_count_var = tk.IntVar(value=3)
+        self.building_count_var = tk.IntVar(value=5)
+        self.settlement_size_var = tk.DoubleVar(value=0.45)
+        self.path_width_var = tk.DoubleVar(value=2.0)
+        self.settlement_terraform_enabled_var = tk.BooleanVar(value=True)
+        self.buildable_terraform_strength_var = tk.DoubleVar(value=0.28)
+        self.path_terraform_strength_var = tk.DoubleVar(value=1.0)
+        self.buildable_enabled_var = tk.BooleanVar(value=True)
+        self.settlements_enabled_var = tk.BooleanVar(value=True)
+        self.paths_enabled_var = tk.BooleanVar(value=True)
+        self.buildable_brightness_var = tk.DoubleVar(value=1.0)
+        self.settlement_brightness_var = tk.DoubleVar(value=1.0)
+        self.path_brightness_var = tk.DoubleVar(value=1.0)
 
         self._add_scale_row(filter_frame, "Gauss-Filter:", self.gauss_var, 0.5, 5.0, "primary", "{:.1f}")
 
@@ -333,6 +398,62 @@ class HeightmapGeneratorGUI:
         tb.Button(preset_row, text="Sehr konservativ", bootstyle="danger-outline", width=15, command=lambda: self.apply_cost_preset("konservativ")).pack(side=LEFT, padx=4)
         tb.Label(cost_box, text="Hoeherer Kostenwert = schwieriger begehbar.", font=("Helvetica", 8), bootstyle="secondary").pack(anchor=W, pady=(2, 0))
 
+        # ── Bauflaechen ──────────────────────────────────────────────────────
+        buildable_box = tb.Labelframe(detail_frame, text="Bauflaechen", padding=8)
+        buildable_box.pack(fill=X, pady=(10, 0))
+        buildable_toggle_row = tb.Frame(buildable_box)
+        buildable_toggle_row.pack(fill=X, pady=(0, 4))
+        tb.Checkbutton(buildable_toggle_row, text="Bauflaechen aktiv", variable=self.buildable_enabled_var, bootstyle="info-round-toggle").pack(side=LEFT)
+        self._add_scale_row(buildable_box, "Max Bau-Steigung:", self.buildable_slope_var, 2.0, 20.0, "info", "{:.1f}")
+        self._add_scale_row(buildable_box, "Max Bau-Rauheit:", self.buildable_roughness_var, 0.05, 1.00, "info", "{:.2f}")
+        self._add_scale_row(buildable_box, "Min Kuestenabstand:", self.min_coast_distance_var, 0.0, 30.0, "info", "{:.1f}")
+        self._add_scale_row(buildable_box, "Planierung Terrain:", self.buildable_terraform_strength_var, 0.0, 1.0, "info", "{:.2f}")
+        self._add_scale_row(buildable_box, "Helligkeit:", self.buildable_brightness_var, 0.2, 3.0, "info", "{:.2f}")
+
+        # ── Ortschaften ──────────────────────────────────────────────────────
+        settlement_group_box = tb.Labelframe(detail_frame, text="Ortschaften", padding=8)
+        settlement_group_box.pack(fill=X, pady=(8, 0))
+        settlement_toggle_row = tb.Frame(settlement_group_box)
+        settlement_toggle_row.pack(fill=X, pady=(0, 4))
+        tb.Checkbutton(settlement_toggle_row, text="Ortschaften aktiv", variable=self.settlements_enabled_var, bootstyle="success-round-toggle").pack(side=LEFT)
+        self._add_scale_row(settlement_group_box, "Randabstand:", self.settlement_border_margin_var, 0.0, 25.0, "success", "{:.1f}")
+        self._add_scale_row(settlement_group_box, "Anzahl Ortschaften:", self.settlement_count_var, 1, 8, "success", "{:.0f}")
+        self._add_scale_row(settlement_group_box, "Anzahl Gebaeude:", self.building_count_var, 0, 20, "success", "{:.0f}")
+        self._add_scale_row(settlement_group_box, "Ortsgroesse:", self.settlement_size_var, 0.0, 1.0, "success", "{:.2f}")
+        self._add_scale_row(settlement_group_box, "Helligkeit:", self.settlement_brightness_var, 0.2, 3.0, "success", "{:.2f}")
+        tb.Label(
+            settlement_group_box,
+            text="Ortschaften erhalten 50x50m Flaechen, Haeuser 15x15m Flaechen.",
+            font=("Helvetica", 8),
+            bootstyle="secondary",
+            wraplength=420,
+            justify=LEFT,
+        ).pack(anchor=W, pady=(2, 0))
+
+        # ── Wege ─────────────────────────────────────────────────────────────
+        paths_box = tb.Labelframe(detail_frame, text="Wege", padding=8)
+        paths_box.pack(fill=X, pady=(8, 0))
+        paths_toggle_row = tb.Frame(paths_box)
+        paths_toggle_row.pack(fill=X, pady=(0, 4))
+        tb.Checkbutton(paths_toggle_row, text="Wege aktiv", variable=self.paths_enabled_var, bootstyle="warning-round-toggle").pack(side=LEFT)
+        self._add_scale_row(paths_box, "Wegbreite:", self.path_width_var, 1.0, 5.0, "warning", "{:.1f}")
+        tb.Checkbutton(
+            paths_box,
+            text="Terrain-Planierung fuer Ortschaften/Haeuser/Wege aktiv",
+            variable=self.settlement_terraform_enabled_var,
+            bootstyle="warning-round-toggle",
+        ).pack(anchor=W, pady=(4, 2))
+        self._add_scale_row(paths_box, "Planierung Terrain:", self.path_terraform_strength_var, 0.0, 1.0, "warning", "{:.2f}")
+        self._add_scale_row(paths_box, "Helligkeit:", self.path_brightness_var, 0.2, 3.0, "warning", "{:.2f}")
+        tb.Label(
+            paths_box,
+            text="Wege bilden Umfahrungen und Abzweige zu jeder Ortschaft und jedem Gebaeude.",
+            font=("Helvetica", 8),
+            bootstyle="secondary",
+            wraplength=420,
+            justify=LEFT,
+        ).pack(anchor=W, pady=(2, 0))
+
         self.figure = Figure(figsize=(2.6, 1.5), dpi=100)
         self.ax = self.figure.add_subplot(111)
         self.ax.set_xlabel("Entfernung (Meter)")
@@ -379,7 +500,7 @@ class HeightmapGeneratorGUI:
         layer_combo = tb.Combobox(
             layer_frame,
             textvariable=self.preview_layer_var,
-            values=["Hoehe", "Steigung", "Rauheit", "Kosten"],
+            values=["Hoehe", "Steigung", "Rauheit", "Kosten", "Bauflaechen", "Ortschaften", "Wege", "Gebaeude"],
             width=12,
             state="readonly",
             bootstyle="info",
@@ -425,9 +546,13 @@ class HeightmapGeneratorGUI:
             self.mountain_count_var,
             self.octaves_var,
             self.persistence_var,
+            self.landmass_scale_var,
             self.base_height_var,
             self.hill_height_var,
             self.mountain_height_var,
+            self.coastal_erosion_var,
+            self.ridge_strength_var,
+            self.drainage_strength_var,
             self.seed_var,
             self.terrain_type_var,
             self.contrast_var,
@@ -441,9 +566,85 @@ class HeightmapGeneratorGUI:
             self.mixer_mode_var,
             self.shore_type_var,
             self.shore_width_var,
+            self.hills_enabled_var,
+            self.mountains_enabled_var,
+            self.shore_enabled_var,
         ]
         for var in traces:
             var.trace_add("write", self._on_realtime_setting_changed)
+
+        settlement_vars = [
+            self.buildable_slope_var,
+            self.buildable_roughness_var,
+            self.min_coast_distance_var,
+            self.settlement_border_margin_var,
+            self.settlement_count_var,
+            self.building_count_var,
+            self.settlement_size_var,
+            self.path_width_var,
+            self.settlement_terraform_enabled_var,
+            self.buildable_terraform_strength_var,
+            self.path_terraform_strength_var,
+            self.buildable_enabled_var,
+            self.settlements_enabled_var,
+            self.paths_enabled_var,
+        ]
+        for var in settlement_vars:
+            var.trace_add("write", self._on_settlement_setting_changed)
+
+        overlay_vars = [
+            self.buildable_brightness_var,
+            self.settlement_brightness_var,
+            self.path_brightness_var,
+        ]
+        for var in overlay_vars:
+            var.trace_add("write", self._on_overlay_setting_changed)
+
+    def _on_overlay_setting_changed(self, *_args):
+        if self.height_data is not None:
+            self._refresh_preview_layer()
+
+    def _on_settlement_setting_changed(self, *_args):
+        if self._settlement_after_id is not None:
+            try:
+                self.root.after_cancel(self._settlement_after_id)
+            except Exception:
+                pass
+        self._settlement_after_id = self.root.after(400, self._recompute_human_layers_only)
+
+    def _recompute_human_layers_only(self):
+        self._settlement_after_id = None
+        if self.height_data is None or self.slope_data is None:
+            return
+        if self.is_generating:
+            return
+
+        # Snapshot avoids Optional type ambiguity for worker thread.
+        current_height_data = self.height_data
+        if current_height_data is None:
+            return
+
+        if bool(self.settlement_terraform_enabled_var.get()):
+            self.generate_heightmap(live_request=True)
+            return
+
+        params = self._build_params()
+        if self.height_data.shape != (params.height, params.width):
+            # Karte wurde skaliert; Human-Layer müssen auf neu generiertem Terrain basieren.
+            self.generate_heightmap(live_request=True)
+            return
+
+        def _worker():
+            try:
+                layers = self.engine.compute_extended_layers(current_height_data, params)
+                self.buildable_data = layers.get("buildable")
+                self.settlement_data = layers.get("settlements")
+                self.path_data = layers.get("paths")
+                self.building_data = layers.get("buildings")
+                self.root.after(0, self._refresh_preview_layer)
+            except Exception:
+                pass
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _on_realtime_setting_changed(self, *_args):
         if not self.realtime_3d_var.get():
@@ -472,17 +673,22 @@ class HeightmapGeneratorGUI:
         self.generate_heightmap(live_request=True)
 
     def _build_params(self):
+        w = int(self.width_var.get())
+        h = int(self.height_var.get())
+        hill_extent_px = float(self.hill_extent_var.get()) / 100.0 * w
+        mountain_extent_px = float(self.mountain_extent_var.get()) / 100.0 * w
         return GeneratorParams(
-            width=int(self.width_var.get()),
-            height=int(self.height_var.get()),
-            hill_extent=float(self.hill_extent_var.get()),
-            mountain_extent=float(self.mountain_extent_var.get()),
+            width=w,
+            height=h,
+            hill_extent=hill_extent_px,
+            mountain_extent=mountain_extent_px,
             octaves=int(self.octaves_var.get()),
             persistence=float(self.persistence_var.get()),
+            landmass_scale=float(self.landmass_scale_var.get()),
             base_height=float(self.base_height_var.get()),
-            hill_count=int(self.hill_count_var.get()),
+            hill_count=int(self.hill_count_var.get()) if bool(self.hills_enabled_var.get()) else 0,
             hill_height=float(self.hill_height_var.get()),
-            mountain_count=int(self.mountain_count_var.get()),
+            mountain_count=int(self.mountain_count_var.get()) if bool(self.mountains_enabled_var.get()) else 0,
             mountain_height=float(self.mountain_height_var.get()),
             seed=int(self.seed_var.get()),
             terrain_type=self.terrain_type_var.get(),
@@ -493,6 +699,24 @@ class HeightmapGeneratorGUI:
             extra_smooth=bool(self.extra_smooth_var.get()),
             shore_type=self._shore_type_key(),
             shore_width=float(self.shore_width_var.get()),
+            shore_enabled=bool(self.shore_enabled_var.get()),
+            coastal_erosion_strength=float(self.coastal_erosion_var.get()),
+            ridge_strength=float(self.ridge_strength_var.get()),
+            drainage_strength=float(self.drainage_strength_var.get()),
+            buildable_max_slope=float(self.buildable_slope_var.get()),
+            buildable_max_roughness=float(self.buildable_roughness_var.get()),
+            min_coast_distance=float(self.min_coast_distance_var.get()),
+            settlement_border_margin=float(self.settlement_border_margin_var.get()),
+            settlement_count=int(self.settlement_count_var.get()),
+            building_count=int(self.building_count_var.get()),
+            settlement_size=float(self.settlement_size_var.get()),
+            path_width=float(self.path_width_var.get()),
+            settlement_terraform_enabled=bool(self.settlement_terraform_enabled_var.get()),
+            buildable_terraform_strength=float(self.buildable_terraform_strength_var.get()),
+            path_terraform_strength=float(self.path_terraform_strength_var.get()),
+            buildable_enabled=bool(self.buildable_enabled_var.get()),
+            settlements_enabled=bool(self.settlements_enabled_var.get()),
+            paths_enabled=bool(self.paths_enabled_var.get()),
         )
 
     def _shore_type_key(self) -> str:
@@ -528,6 +752,19 @@ class HeightmapGeneratorGUI:
         self.cost_rough_weight_var.set(weights[2])
         self.status_label.config(text=f"Kosten-Preset aktiv: {preset_name}")
 
+    def apply_procedural_preset(self, preset_name: str):
+        if preset_name == "sanft":
+            values = (0.20, 0.18, 0.12)
+        elif preset_name == "realistisch":
+            values = (0.45, 0.55, 0.35)
+        else:
+            values = (0.80, 0.85, 0.65)
+
+        self.coastal_erosion_var.set(values[0])
+        self.ridge_strength_var.set(values[1])
+        self.drainage_strength_var.set(values[2])
+        self.status_label.config(text=f"Prozedural-Preset aktiv: {preset_name}")
+
     def _compute_cost_layer(self):
         if self.height_data is None or self.slope_data is None or self.roughness_data is None:
             self.cost_data = None
@@ -554,19 +791,83 @@ class HeightmapGeneratorGUI:
             return
 
         selected_layer = self.preview_layer_var.get() if hasattr(self, "preview_layer_var") else "Hoehe"
-        if selected_layer == "Steigung" and self.slope_data is not None:
-            layer_gray = self.engine.layer_to_gray(self.slope_data)
-        elif selected_layer == "Rauheit" and self.roughness_data is not None:
-            layer_gray = self.engine.layer_to_gray(self.roughness_data)
-        elif selected_layer == "Kosten" and self.cost_data is not None:
-            layer_gray = np.rint(np.clip(self.cost_data, 0.0, 1.0) * 255.0).astype(np.uint8)
-        else:
-            layer_gray = self.height_gray_map
+        base_gray = self.height_gray_map
+        if base_gray is None:
+            h_min = float(np.min(self.height_data))
+            h_max = float(np.max(self.height_data))
+            h_span = max(1e-6, h_max - h_min)
+            base_gray = np.rint(np.clip((self.height_data - h_min) / h_span, 0.0, 1.0) * 255.0).astype(np.uint8)
 
-        if layer_gray is None:
+        def _tint(data, tint_rgb, brightness):
+            v = np.clip(data, 0.0, 1.0)
+            bg = np.clip(base_gray.astype(np.float32) * 0.68, 0.0, 255.0)
+            bg_rgb = np.stack([bg, bg, bg], axis=2)
+            tint = np.stack([
+                np.clip(v * tint_rgb[0] * brightness, 0, 255).astype(np.float32),
+                np.clip(v * tint_rgb[1] * brightness, 0, 255).astype(np.float32),
+                np.clip(v * tint_rgb[2] * brightness, 0, 255).astype(np.float32),
+            ], axis=2)
+            alpha = np.clip(v[:, :, None] * 0.88, 0.0, 1.0)
+            out = np.clip(bg_rgb * (1.0 - alpha) + tint * alpha, 0.0, 255.0).astype(np.uint8)
+            return out, "RGB"
+
+        img_mode = "L"
+        layer_arr = None
+        if selected_layer == "Steigung" and self.slope_data is not None:
+            layer_arr = self.engine.layer_to_gray(self.slope_data)
+        elif selected_layer == "Rauheit" and self.roughness_data is not None:
+            layer_arr = self.engine.layer_to_gray(self.roughness_data)
+        elif selected_layer == "Kosten" and self.cost_data is not None:
+            layer_arr = np.rint(np.clip(self.cost_data, 0.0, 1.0) * 255.0).astype(np.uint8)
+        elif selected_layer == "Bauflaechen" and self.buildable_data is not None:
+            layer_arr, img_mode = _tint(self.buildable_data, (80, 220, 100), float(self.buildable_brightness_var.get()))
+        elif selected_layer == "Ortschaften" and self.settlement_data is not None:
+            layer_arr, img_mode = _tint(self.settlement_data, (255, 190, 80), float(self.settlement_brightness_var.get()))
+        elif selected_layer == "Wege" and self.path_data is not None:
+            layer_arr, img_mode = _tint(self.path_data, (100, 170, 255), float(self.path_brightness_var.get()))
+        elif selected_layer == "Gebaeude" and self.building_data is not None:
+            layer_arr, img_mode = _tint(self.building_data, (255, 240, 80), 1.0)
+        else:
+            if base_gray is not None:
+                has_overlay = (
+                    self.settlement_data is not None
+                    or self.path_data is not None
+                    or self.building_data is not None
+                )
+                if has_overlay:
+                    h = base_gray.astype(np.float32)
+                    rgb = np.stack([h, h, h], axis=2)
+                    # Farbabsenkung #010101 = (1,1,1) pro Einheit, x100 fuer Sichtbarkeit
+                    darken = np.array([1.0, 1.0, 1.0], dtype=np.float32) * 100.0
+                    if self.settlement_data is not None:
+                        rgb = np.clip(
+                            rgb - self.settlement_data[:, :, None] * darken * 0.7 * float(self.settlement_brightness_var.get()),
+                            0.0,
+                            255.0,
+                        )
+                    if self.path_data is not None:
+                        rgb = np.clip(
+                            rgb - self.path_data[:, :, None] * darken * float(self.path_brightness_var.get()),
+                            0.0,
+                            255.0,
+                        )
+                    if self.building_data is not None:
+                        rgb = np.clip(rgb - self.building_data[:, :, None] * darken * 1.2, 0.0, 255.0)
+                    if self.buildable_data is not None:
+                        rgb = np.clip(
+                            rgb - self.buildable_data[:, :, None] * darken * 0.35 * float(self.buildable_brightness_var.get()),
+                            0.0,
+                            255.0,
+                        )
+                    layer_arr = rgb.astype(np.uint8)
+                    img_mode = "RGB"
+                else:
+                    layer_arr = base_gray
+
+        if layer_arr is None:
             return
 
-        self.current_image = Image.fromarray(layer_gray, mode="L")
+        self.current_image = Image.fromarray(layer_arr, mode=img_mode)
         preview_image = self.current_image.copy()
         preview_image.thumbnail((440, 440))
 
@@ -660,14 +961,24 @@ class HeightmapGeneratorGUI:
         try:
             height_data, gray_map, analysis_layers = self.engine.generate(params)
             height_data = self._apply_mixer(height_data)
+            # Mixer kann Terraforming-Effekte überschreiben; daher auf finalem Terrain erneut anwenden.
+            if bool(params.settlement_terraform_enabled):
+                analysis_layers = self.engine.compute_extended_layers(height_data, params)
+                height_data = self.engine._apply_settlement_terraform(height_data, analysis_layers, params)
+                analysis_layers = self.engine.compute_extended_layers(height_data, params)
+            elif self.mixer_enabled_var.get() and self.mixer_height_data is not None:
+                # Nur bei aktivem Mixer neu berechnen, sonst die bereits berechneten Layer nutzen.
+                analysis_layers = self.engine.compute_extended_layers(height_data, params)
+
             gray_map = self.engine.height_to_gray_array(height_data)
-            # Nur bei aktivem Mixer neu berechnen, sonst die bereits berechneten Layer nutzen.
-            if self.mixer_enabled_var.get() and self.mixer_height_data is not None:
-                analysis_layers = self.engine.compute_analysis_layers(height_data)
             self.height_data = height_data
             self.height_gray_map = gray_map
             self.slope_data = analysis_layers.get("slope")
             self.roughness_data = analysis_layers.get("roughness")
+            self.buildable_data = analysis_layers.get("buildable")
+            self.settlement_data = analysis_layers.get("settlements")
+            self.path_data = analysis_layers.get("paths")
+            self.building_data = analysis_layers.get("buildings")
             self._compute_cost_layer()
             self.current_height_image = Image.fromarray(gray_map, mode="L")
 
@@ -822,10 +1133,14 @@ class HeightmapGeneratorGUI:
         slope_m = float(self.slope_data[src_y, src_x]) if self.slope_data is not None else 0.0
         rough_m = float(self.roughness_data[src_y, src_x]) if self.roughness_data is not None else 0.0
         cost_v = float(self.cost_data[src_y, src_x]) if self.cost_data is not None else 0.0
+        build_v = float(self.buildable_data[src_y, src_x]) if self.buildable_data is not None else 0.0
+        settle_v = float(self.settlement_data[src_y, src_x]) if self.settlement_data is not None else 0.0
+        path_v = float(self.path_data[src_y, src_x]) if self.path_data is not None else 0.0
+        bldg_v = float(self.building_data[src_y, src_x]) if self.building_data is not None else 0.0
         hex_triplet = f"{gray:02X}{gray:02X}{gray:02X}"
 
         self.pixel_info_label.config(
-            text=f"Pixel-Info: HEX #{hex_triplet} | Graustufe {gray} | Hoehe {height_m:.2f} m | Steigung {slope_m:.2f} deg | Rauheit {rough_m:.2f} m | Kosten {cost_v:.2f} | Position {src_x},{src_y}"
+            text=f"Pixel-Info: HEX #{hex_triplet} | Graustufe {gray} | Hoehe {height_m:.2f} m | Steigung {slope_m:.2f} deg | Rauheit {rough_m:.2f} m | Kosten {cost_v:.2f} | Bau {build_v:.2f} | Ort {settle_v:.2f} | Weg {path_v:.2f} | Geb {bldg_v:.2f} | Position {src_x},{src_y}"
         )
 
     def _clear_pixel_info(self, _event):
@@ -868,6 +1183,30 @@ class HeightmapGeneratorGUI:
             self.slope_data.astype(np.float32).tofile(os.path.join(export_dir, f"{prefix}_slope.raw"))
             self.roughness_data.astype(np.float32).tofile(os.path.join(export_dir, f"{prefix}_roughness.raw"))
             self.cost_data.astype(np.float32).tofile(os.path.join(export_dir, f"{prefix}_cost.raw"))
+
+            if self.buildable_data is not None:
+                build_gray = np.rint(np.clip(self.buildable_data, 0.0, 1.0) * 255.0).astype(np.uint8)
+                Image.fromarray(build_gray, mode="L").save(os.path.join(export_dir, f"{prefix}_buildable.png"))
+                self.buildable_data.astype(np.float32).tofile(os.path.join(export_dir, f"{prefix}_buildable.raw"))
+                np.savetxt(os.path.join(export_dir, f"{prefix}_buildable.csv"), self.buildable_data, delimiter=",", fmt="%.4f")
+
+            if self.settlement_data is not None:
+                settle_gray = np.rint(np.clip(self.settlement_data, 0.0, 1.0) * 255.0).astype(np.uint8)
+                Image.fromarray(settle_gray, mode="L").save(os.path.join(export_dir, f"{prefix}_settlements.png"))
+                self.settlement_data.astype(np.float32).tofile(os.path.join(export_dir, f"{prefix}_settlements.raw"))
+                np.savetxt(os.path.join(export_dir, f"{prefix}_settlements.csv"), self.settlement_data, delimiter=",", fmt="%.4f")
+
+            if self.path_data is not None:
+                path_gray = np.rint(np.clip(self.path_data, 0.0, 1.0) * 255.0).astype(np.uint8)
+                Image.fromarray(path_gray, mode="L").save(os.path.join(export_dir, f"{prefix}_paths.png"))
+                self.path_data.astype(np.float32).tofile(os.path.join(export_dir, f"{prefix}_paths.raw"))
+                np.savetxt(os.path.join(export_dir, f"{prefix}_paths.csv"), self.path_data, delimiter=",", fmt="%.4f")
+
+            if self.building_data is not None:
+                bldg_gray = np.rint(np.clip(self.building_data, 0.0, 1.0) * 255.0).astype(np.uint8)
+                Image.fromarray(bldg_gray, mode="L").save(os.path.join(export_dir, f"{prefix}_buildings.png"))
+                self.building_data.astype(np.float32).tofile(os.path.join(export_dir, f"{prefix}_buildings.raw"))
+                np.savetxt(os.path.join(export_dir, f"{prefix}_buildings.csv"), self.building_data, delimiter=",", fmt="%.4f")
 
             self.status_label.config(text=f"Layer exportiert: {os.path.basename(export_dir)}")
         except Exception as err:

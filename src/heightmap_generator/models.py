@@ -21,5 +21,24 @@ class GeneratorParams:
     median_size: int
     auto_smooth: bool
     extra_smooth: bool
+    landmass_scale: float = 50.0
     shore_type: str = "standard"
     shore_width: float = 0.5
+    coastal_erosion_strength: float = 0.0
+    ridge_strength: float = 0.0
+    drainage_strength: float = 0.0
+    buildable_max_slope: float = 8.0
+    buildable_max_roughness: float = 0.35
+    min_coast_distance: float = 8.0
+    settlement_border_margin: float = 8.0
+    settlement_count: int = 3
+    building_count: int = 5
+    settlement_size: float = 0.45
+    path_width: float = 2.0
+    settlement_terraform_enabled: bool = True
+    buildable_terraform_strength: float = 0.28
+    path_terraform_strength: float = 1.0
+    shore_enabled: bool = True
+    buildable_enabled: bool = True
+    settlements_enabled: bool = True
+    paths_enabled: bool = True
