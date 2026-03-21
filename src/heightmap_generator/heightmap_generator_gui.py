@@ -323,12 +323,13 @@ class HeightmapGeneratorGUI:
         self.building_count_var = tk.IntVar(value=5)
         self.settlement_size_var = tk.DoubleVar(value=0.45)
         self.path_width_var = tk.DoubleVar(value=2.0)
-        self.settlement_terraform_enabled_var = tk.BooleanVar(value=True)
+        self.path_curviness_var = tk.DoubleVar(value=0.7)
+        self.settlement_terraform_enabled_var = tk.BooleanVar(value=False)
         self.buildable_terraform_strength_var = tk.DoubleVar(value=0.28)
         self.path_terraform_strength_var = tk.DoubleVar(value=1.0)
-        self.buildable_enabled_var = tk.BooleanVar(value=True)
-        self.settlements_enabled_var = tk.BooleanVar(value=True)
-        self.paths_enabled_var = tk.BooleanVar(value=True)
+        self.buildable_enabled_var = tk.BooleanVar(value=False)
+        self.settlements_enabled_var = tk.BooleanVar(value=False)
+        self.paths_enabled_var = tk.BooleanVar(value=False)
         self.buildable_brightness_var = tk.DoubleVar(value=1.0)
         self.settlement_brightness_var = tk.DoubleVar(value=1.0)
         self.path_brightness_var = tk.DoubleVar(value=1.0)
@@ -437,6 +438,7 @@ class HeightmapGeneratorGUI:
         paths_toggle_row.pack(fill=X, pady=(0, 4))
         tb.Checkbutton(paths_toggle_row, text="Wege aktiv", variable=self.paths_enabled_var, bootstyle="warning-round-toggle").pack(side=LEFT)
         self._add_scale_row(paths_box, "Wegbreite:", self.path_width_var, 1.0, 5.0, "warning", "{:.1f}")
+        self._add_scale_row(paths_box, "Kurvigkeit:", self.path_curviness_var, 0.0, 1.0, "warning", "{:.2f}")
         tb.Checkbutton(
             paths_box,
             text="Terrain-Planierung fuer Ortschaften/Haeuser/Wege aktiv",
@@ -582,6 +584,7 @@ class HeightmapGeneratorGUI:
             self.building_count_var,
             self.settlement_size_var,
             self.path_width_var,
+            self.path_curviness_var,
             self.settlement_terraform_enabled_var,
             self.buildable_terraform_strength_var,
             self.path_terraform_strength_var,
@@ -711,6 +714,7 @@ class HeightmapGeneratorGUI:
             building_count=int(self.building_count_var.get()),
             settlement_size=float(self.settlement_size_var.get()),
             path_width=float(self.path_width_var.get()),
+            path_curviness=float(self.path_curviness_var.get()),
             settlement_terraform_enabled=bool(self.settlement_terraform_enabled_var.get()),
             buildable_terraform_strength=float(self.buildable_terraform_strength_var.get()),
             path_terraform_strength=float(self.path_terraform_strength_var.get()),

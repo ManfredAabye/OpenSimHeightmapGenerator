@@ -634,32 +634,9 @@ class TerrainEngine:
         rough_norm = np.clip(roughness / max(1e-6, rough_ref), 0.0, 1.0)
         water_penalty = (~land).astype(np.float32) * 40.0
         path_cost = 1.0 + 3.5 * slope_norm + 2.0 * rough_norm + 1.8 * (1.0 - buildable) + water_penalty
-
-        # Region loop (umlaufend) around all settlement centers.
-        if centers:
-            ys = [c[0] for c in centers]
-            xs = [c[1] for c in centers]
-            margin = settlement_half + 10
-            y0 = max(0, min(ys) - margin)
-            y1 = min(work_rows - 1, max(ys) + margin)
-            x0 = max(0, min(xs) - margin)
-            x1 = min(work_cols - 1, max(xs) + margin)
-            path_mask[y0, x0:x1 + 1] = 1.0
-            path_mask[y1, x0:x1 + 1] = 1.0
-            path_mask[y0:y1 + 1, x0] = 1.0
-            path_mask[y0:y1 + 1, x1] = 1.0
-
-        # Ring roads around each settlement area.
-        ring_offset = settlement_half + 3
-        for cy, cx in centers:
-            y0 = max(0, cy - ring_offset)
-            y1 = min(work_rows - 1, cy + ring_offset)
-            x0 = max(0, cx - ring_offset)
-            x1 = min(work_cols - 1, cx + ring_offset)
-            path_mask[y0, x0:x1 + 1] = 1.0
-            path_mask[y1, x0:x1 + 1] = 1.0
-            path_mask[y0:y1 + 1, x0] = 1.0
-            path_mask[y0:y1 + 1, x1] = 1.0
+        path_curviness = float(np.clip(getattr(params, "path_curviness", 0.7), 0.0, 1.0))
+        chaikin_iterations = int(round(path_curviness * 3.0))
+        sample_density = 0.8 + path_curviness * 2.2
 
         land_points = np.argwhere(land)
 
@@ -678,6 +655,88 @@ class TerrainEngine:
             nearest = points[int(np.argmin(d))]
             return (int(nearest[0]), int(nearest[1]))
 
+        def _chaikin(points, iterations=2):
+            pts = [np.array([float(p[0]), float(p[1])], dtype=np.float32) for p in points]
+            if len(pts) < 3:
+                return points
+            if iterations <= 0:
+                return points
+            for _ in range(max(1, iterations)):
+                out = [pts[0]]
+                for i in range(len(pts) - 1):
+                    p = pts[i]
+                    q = pts[i + 1]
+                    out.append((0.75 * p + 0.25 * q).astype(np.float32))
+                    out.append((0.25 * p + 0.75 * q).astype(np.float32))
+                out.append(pts[-1])
+                pts = out
+            smooth = []
+            for p in pts:
+                y = int(np.clip(round(float(p[0])), 0, work_rows - 1))
+                x = int(np.clip(round(float(p[1])), 0, work_cols - 1))
+                smooth.append((y, x))
+            return smooth
+
+        def _draw_polyline(points):
+            if len(points) < 2:
+                return
+            smoothed = _chaikin(points, iterations=chaikin_iterations)
+            prev = smoothed[0]
+            for cur in smoothed[1:]:
+                dy = cur[0] - prev[0]
+                dx = cur[1] - prev[1]
+                steps = max(abs(dy), abs(dx), 1)
+                for i in range(steps + 1):
+                    py = int(round(prev[0] + dy * (i / steps)))
+                    px = int(round(prev[1] + dx * (i / steps)))
+                    if 0 <= py < work_rows and 0 <= px < work_cols and land[py, px]:
+                        path_mask[py, px] = 1.0
+                prev = cur
+
+        def _sample_route(route, base_div):
+            if not route:
+                return []
+            div = max(4, int(round(base_div * sample_density)))
+            step = max(1, len(route) // div)
+            sampled = route[::step]
+            if sampled[-1] != route[-1]:
+                sampled.append(route[-1])
+            return sampled
+
+        # Rounded ring roads around each settlement area (no right-angle boxes).
+        ring_offset = settlement_half + 5
+        for cy, cx in centers:
+            n = max(24, int(2.0 * np.pi * ring_offset * (0.45 + 0.55 * path_curviness)))
+            loop = []
+            for i in range(n):
+                a = 2.0 * np.pi * (i / n)
+                # Slight ellipse variation avoids perfect geometric uniformity.
+                amp = 0.02 + 0.10 * path_curviness
+                ry = ring_offset * (0.95 + amp * np.sin(a * 2.0))
+                rx = ring_offset * (1.00 + (amp * 0.8) * np.cos(a * 3.0))
+                py = int(np.clip(round(cy + np.sin(a) * ry), 0, work_rows - 1))
+                px = int(np.clip(round(cx + np.cos(a) * rx), 0, work_cols - 1))
+                if land[py, px]:
+                    loop.append((py, px))
+            if len(loop) >= 3:
+                loop.append(loop[0])
+                _draw_polyline(loop)
+
+        # Curved region loop through settlements sorted by polar angle.
+        if len(centers) >= 3:
+            my = float(np.mean([c[0] for c in centers]))
+            mx = float(np.mean([c[1] for c in centers]))
+            ordered = sorted(centers, key=lambda c: np.arctan2(c[0] - my, c[1] - mx))
+            for i in range(len(ordered)):
+                a = ordered[i]
+                b = ordered[(i + 1) % len(ordered)]
+                start = _nearest_land_point(a)
+                goal = _nearest_land_point(b)
+                route = self._astar_path(path_cost, start, goal, passable_mask=land)
+                if route:
+                    sampled = _sample_route(route, base_div=36)
+                    _draw_polyline(sampled)
+
         # Connect settlements with main links and add a branch into each center.
         if len(centers) >= 2:
             connected = [centers[0]]
@@ -686,8 +745,9 @@ class TerrainEngine:
                 start = _nearest_land_point(anchor)
                 goal = _nearest_land_point(center)
                 route = self._astar_path(path_cost, start, goal, passable_mask=land)
-                for py, px in route:
-                    path_mask[py, px] = 1.0
+                if route:
+                    sampled = _sample_route(route, base_div=40)
+                    _draw_polyline(sampled)
                 connected.append(center)
 
         for center in centers:
@@ -695,8 +755,9 @@ class TerrainEngine:
             start = _nearest_land_point(anchor)
             goal = _nearest_land_point(center)
             route = self._astar_path(path_cost, start, goal, passable_mask=land)
-            for py, px in route:
-                path_mask[py, px] = 1.0
+            if route:
+                sampled = _sample_route(route, base_div=24)
+                _draw_polyline(sampled)
 
         # --- Einzelne Gebaeude ausserhalb von Ortschaften ---
         building_count = max(0, int(getattr(params, "building_count", 5)))
@@ -752,8 +813,9 @@ class TerrainEngine:
             start = _nearest_land_point(anchor)
             goal = _nearest_land_point(b_center)
             route = self._astar_path(path_cost, start, goal, passable_mask=land)
-            for py, px in route:
-                path_mask[py, px] = 1.0
+            if route:
+                sampled = _sample_route(route, base_div=18)
+                _draw_polyline(sampled)
 
         # Wege strikt auf Land halten.
         path_mask *= land.astype(np.float32)
@@ -762,6 +824,11 @@ class TerrainEngine:
         if path_width > 1:
             path_mask = ndimage.binary_dilation(path_mask > 0.0, iterations=path_width - 1).astype(np.float32)
             path_mask *= land.astype(np.float32)
+
+        # Final softening to suppress residual hard corners.
+        path_soft = ndimage.gaussian_filter(path_mask.astype(np.float32), sigma=0.45 + 0.9 * path_curviness)
+        path_mask = (path_soft > (0.30 - 0.12 * path_curviness)).astype(np.float32)
+        path_mask *= land.astype(np.float32)
 
         return buildable.astype(np.float32), settlement_mask.astype(np.float32), path_mask.astype(np.float32), building_mask.astype(np.float32)
 

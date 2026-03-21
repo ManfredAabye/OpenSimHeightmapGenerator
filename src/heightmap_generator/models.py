@@ -35,10 +35,11 @@ class GeneratorParams:
     building_count: int = 5
     settlement_size: float = 0.45
     path_width: float = 2.0
-    settlement_terraform_enabled: bool = True
+    path_curviness: float = 0.7
+    settlement_terraform_enabled: bool = False
     buildable_terraform_strength: float = 0.28
     path_terraform_strength: float = 1.0
     shore_enabled: bool = True
-    buildable_enabled: bool = True
-    settlements_enabled: bool = True
-    paths_enabled: bool = True
+    buildable_enabled: bool = False
+    settlements_enabled: bool = False
+    paths_enabled: bool = False
